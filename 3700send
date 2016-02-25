@@ -1,0 +1,71 @@
+#!/usr/bin/python -u
+#
+# CS3700, Spring 2015
+# Project 2 Starter Code
+#
+
+import sys
+import socket
+import time
+import datetime
+import select
+import json
+
+def log(string):
+    sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
+class send:
+
+    def __init__(self, ip, port):
+        self.dest = (ip, port)
+        self.data_size = 1000
+        self.msg_size = 1500
+        self.sequence = 0
+        # Set up the socket
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.settimeout(30)
+
+    def send_next_packet(self):
+        data = sys.stdin.read(self.data_size)
+        if (len(data) > 0):
+            msg = json.dumps({"sequence": self.sequence, "data": data, "ack": False, "eof": False})
+            self.sequence += len(data)
+            if self.sock.sendto(msg, self.dest) < len(msg):
+                log("[error] unable to fully send packet")
+            else:
+                log("[send data] " + str(self.sequence) + " (" + str(len(data)) + ")")
+            return True
+        else:
+            return False
+
+    def run(self):
+        # Send first packet
+        self.send_next_packet()
+        # Now read in data, send packets
+        while True:
+            result = self.sock.recvfrom(self.msg_size)
+            if result:
+                (data, addr) = result
+                try:
+                    decoded = json.loads(data)
+                    # If there is an ack, send next packet
+                    if decoded['ack'] == self.sequence:
+                        log("[recv ack] " + str(self.sequence))
+                        # Try to send next packet; break if no more data
+                        if (not self.send_next_packet()):
+                            break
+                except (ValueError, KeyError, TypeError):
+                    log("[recv corrupt packet]")
+            else:
+                log("[error] timeout")
+                sys.exit(-1)
+        self.sock.sendto(json.dumps({"eof": True, "data": "", "sequence": self.sequence, "ack": False}), self.dest)
+        sys.exit(0)
+
+if __name__ == '__main__':
+    # Bind to localhost and an ephemeral port
+    IP_PORT = sys.argv[1]
+    UDP_IP = IP_PORT[0:IP_PORT.find(":")]
+    UDP_PORT = int(IP_PORT[IP_PORT.find(":")+1:])
+    dest = (UDP_IP, UDP_PORT)
+    send(UDP_IP, UDP_PORT).run()
