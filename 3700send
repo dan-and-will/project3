@@ -46,6 +46,8 @@ class send:
             result = self.sock.recvfrom(self.msg_size)
             if result:
                 (data, addr) = result
+                log('assr.......'+str(addr))
+                log('assr.......'+str(self.dest))
                 try:
                     decoded = json.loads(data)
                     # If there is an ack, send next packet
