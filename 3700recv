@@ -25,6 +25,8 @@ class Receiver:
         self.sock.settimeout(30)
         log("[bound] " + str(self.sock.getsockname()[1]))
 
+        self.sequence = 0
+
     def receive_messages(self):
         result = self.sock.recvfrom(self.msg_size)
         if result:
@@ -39,10 +41,15 @@ class Receiver:
                 if (decoded['data']):
                     # If we receive data, we assume it's in-order
                     # You will need to do much more here
-                    log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
-                    sys.stdout.write(decoded['data'])
+
+                    if decoded['sequence'] == self.sequence: #protects against already received packets, and out of order packets(?)
+                        self.sequence = decoded['sequence'] + len(decoded['data'])
+                        log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
+                        sys.stdout.write(decoded['data'])
+                    else:
+                        log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") IGNORED")
                 # Send back an ack to the sender
-                msg = json.dumps({"ack": decoded['sequence'] + len(decoded['data'])})
+                msg = json.dumps({"ack": self.sequence})
                 log("ABOUT TO SEND " + msg)
                 if self.sock.sendto(msg, addr) < len(msg):
                     log("[error] unable to fully send packet")
