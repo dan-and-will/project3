@@ -11,6 +11,10 @@ import datetime
 import select
 import json
 
+SYN = 'SYN'
+ACK = 'ACK'
+FIN = 'FIN'
+
 def log(string):
     sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
 
@@ -27,41 +31,76 @@ class Receiver:
 
         self.sequence = 0
 
+        self.advertised_window = 3000 # in bytes
+        self.received_packets = {}
+
     def receive_messages(self):
-        result = self.sock.recvfrom(self.msg_size)
-        if result:
-            (data, addr) = result
+        if select.select([self.sock], [], [], 0.25)[0]:
+            (data, addr) = self.sock.recvfrom(self.msg_size)
             try:
                 decoded = json.loads(data)
                 # If the EOF flag is set, exit
                 if (decoded['eof']):
                     log("[completed]")
                     sys.exit(0)
-                # If there is data, we accept it and print it out
-                if (decoded['data']):
-                    # If we receive data, we assume it's in-order
-                    # You will need to do much more here
-
-                    if decoded['sequence'] == self.sequence: #protects against already received packets, and out of order packets(?)
-                        self.sequence = decoded['sequence'] + len(decoded['data'])
-                        log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
-                        sys.stdout.write(decoded['data'])
-                    else:
-                        log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") IGNORED")
-                # Send back an ack to the sender
-                msg = json.dumps({"ack": self.sequence})
+                seq = decoded['sequence']
+                if seq == self.sequence:
+                    self.sequence = seq + len(decoded['data'])
+                    log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
+                elif seq > self.sequence:
+                    log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (out-of-order)")
+                else:
+                    log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") IGNORED")
+                    return
+                self.received_packets[seq] = decoded['data']
+                msg = json.dumps({'type': ACK, "ack": self.sequence, "sack": seq + len(decoded['data'])})
                 log("ABOUT TO SEND " + msg)
                 if self.sock.sendto(msg, addr) < len(msg):
                     log("[error] unable to fully send packet")
-            except (ValueError, KeyError, TypeError) as e:
+            except (ValueError, KeyError, TypeError):
                 log("[recv corrupt packet]")
-                raise e
-        else:
-            log("[error] timeout")
-            sys.exit(-1)
+        for ack_num in sorted(self.received_packets.keys()):
+            if ack_num > self.sequence:
+                break
+            sys.stdout.write(self.received_packets[ack_num])
+            del self.received_packets[ack_num]
+        # result = self.sock.recvfrom(self.msg_size)
+        # if result:
+        #     (data, addr) = result
+        #     try:
+        #         decoded = json.loads(data)
+        #         # If the EOF flag is set, exit
+        #         if (decoded['eof']):
+        #             log("[completed]")
+        #             sys.exit(0)
+        #         # If there is data, we accept it and print it out
+        #         if (decoded['data']):
+        #             # If we receive data, we assume it's in-order
+        #             # You will need to do much more here
+        #
+        #             if decoded['sequence'] == self.sequence:
+        #                 self.sequence = decoded['sequence'] + len(decoded['data'])
+        #                 log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") ACCEPTED (in-order)")
+        #                 sys.stdout.write(decoded['data'])
+        #             else:
+        #                 log("[recv data] " + str(decoded['sequence']) + " (" + str(len(decoded['data'])) + ") IGNORED")
+        #         # Send back an ack to the sender
+        #         msg = json.dumps({'type': ACK, "ack": self.sequence, "sack": self.sequence})
+        #         log("ABOUT TO SEND " + msg)
+        #         if self.sock.sendto(msg, addr) < len(msg):
+        #             log("[error] unable to fully send packet")
+        #     except (ValueError, KeyError, TypeError) as e:
+        #         log("[recv corrupt packet]")
+        # else:
+        #     log("[error] timeout")
+        #     sys.exit(-1)
 
     def run(self):
         while True:
+            # import random
+            # if random.randint(0,10) > 5:
+            #     import time
+            #     time.sleep(3)
             self.receive_messages()
 
 if __name__ == '__main__':

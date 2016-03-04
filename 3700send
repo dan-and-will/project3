@@ -11,6 +11,10 @@ import datetime
 import select
 import json
 
+SYN = 'SYN'
+ACK = 'ACK'
+FIN = 'FIN'
+
 def log(string):
     sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
 
@@ -25,49 +29,125 @@ class send:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(30)
         self.previous_packet = None
+        self.previous_sent = None
 
-    def resend_packet(self):
-        if self.sock.sendto(self.previous_packet, self.dest) < len(self.previous_packet):
+        self.RTT = datetime.timedelta(seconds=3)
+        self.RTO = 2 * self.RTT
+
+        self.in_flight = {}
+        self.advwnd = 3000
+        self.cwnd = 3000
+
+    def window(self):
+        return min(self.advwnd, self.cwnd)
+
+    def effective_window(self):
+        # window size - ( bytes sent - first byte in window acked)
+        keys = self.in_flight.keys()
+        min_key = min(keys) if keys else 0
+        return self.window() - (self.sequence - min_key)
+
+    def estimateRTT(self):
+        self.RTT = ( 9 * self.RTT +  (datetime.datetime.now() - self.previous_sent) ) / 10
+        self.RTO = 2 * self.RTT
+
+    # def resend_packet(self):
+    #     self.send_packet(self.previous_packet)
+    #     if self.sock.sendto(self.previous_packet, self.dest) < len(self.previous_packet):
+    #         log("[error] unable to fully send packet")
+    #     else:
+    #         log("[send data] " + str(self.sequence) + " (" + str(len(data)) + ")")
+
+    def send_packet(self, packet, seq_num):
+        if self.sock.sendto(packet, self.dest) < len(packet):
             log("[error] unable to fully send packet")
         else:
-            log("[send data] " + str(self.sequence) + " (" + str(len(data)) + ")")
+            log("[send data] " + str(seq_num) + " (" + str(len(packet)) + ")")
 
     def send_next_packet(self):
         data = sys.stdin.read(self.data_size)
         if (len(data) > 0):
             msg = json.dumps({"sequence": self.sequence, "data": data, "ack": False, "eof": False})
-            self.previous_packet = msg
             self.sequence += len(data)
-            if self.sock.sendto(msg, self.dest) < len(msg):
-                log("[error] unable to fully send packet")
-            else:
-                log("[send data] " + str(self.sequence) + " (" + str(len(data)) + ")")
+            self.in_flight[self.sequence] = (datetime.datetime.now(), msg)
+            self.send_packet(msg, self.sequence)
             return True
         else:
             return False
 
+    def handle_timeout(self, ack_num):
+        msg = self.in_flight[ack_num][1]
+        self.send_packet(msg, ack_num)
+        self.in_flight[ack_num] = (datetime.datetime.now(), msg)
+
     def run(self):
-        # Send first packet
         self.send_next_packet()
-        # Now read in data, send packets
         while True:
-            result = self.sock.recvfrom(self.msg_size)
-            if result:
-                (data, addr) = result
+            now = datetime.datetime.now()
+            for ack_num in self.in_flight:
+                if now - self.in_flight[ack_num][0] > self.RTO:
+                    self.handle_timeout(ack_num)
+            if self.effective_window() > 0:
+                if not self.send_next_packet():
+                    break
+            if select.select([self.sock], [], [], 0.25)[0]:
+                (data, addr) = self.sock.recvfrom(self.msg_size)
                 try:
                     decoded = json.loads(data)
-                    # If there is an ack, send next packet
-                    if decoded['ack'] == self.sequence:
-                        log("[recv ack] " + str(self.sequence))
-                        # Try to send next packet; break if no more data
-                        if (not self.send_next_packet()):
-                            break
-                except (ValueError, KeyError, TypeError):
+                    msg_type =  decoded['type']
+                    if msg_type == ACK:
+                        ack = decoded['ack']
+                        sack = decoded['sack']
+                        # log("[recv ack] " + str(self.sequence))
+                        log("[recv ack] " + str(sack))
+                        del self.in_flight[sack]
+                except ValueError, KeyError:
                     log("[recv corrupt packet]")
-            else:
-                log("[error] timeout")
-                # sys.exit(-1)
-                self.resend_packet()
+
+        # Send first packet
+        # self.send_next_packet()
+        # # Now read in data, send packets
+        # while True:
+        #     result = self.sock.recvfrom(self.msg_size)
+        #     if result:
+        #         (data, addr) = result
+        #         try:
+        #             decoded = json.loads(data)
+        #             # If there is an ack, send next packet
+        #             if decoded['ack'] == self.sequence:
+        #                 log("[recv ack] " + str(self.sequence))
+        #                 # Try to send next packet; break if no more data
+        #                 if (not self.send_next_packet()):
+        #                     break
+        #         except (ValueError, KeyError, TypeError):
+        #             log("[recv corrupt packet]")
+        #     else:
+        #         log("[error] timeout")
+        #         # sys.exit(-1)
+        #         self.resend_packet()
+
+            # ready = select.select([self.sock], [], [], 0.25)[0]
+            # if ready:
+            #     try:
+            #         (data, addr) = self.sock.recvfrom(self.msg_size)
+            #         decoded = json.loads(data)
+            #         # If there is an ack, send next packet
+            #         if decoded['ack'] == self.sequence:
+            #             log("[recv ack] " + str(self.sequence))
+            #             # self.estimateRTT()
+            #             # Try to send next packet; break if no more data
+            #             if (not self.send_next_packet()):
+            #                 break
+            #     except (ValueError, KeyError, TypeError) as e:
+            #         log("[recv corrupt packet]")
+            #         # raise e
+            #     except socket.timeout:
+            #         log('TIMEOUT')
+            #         log(str(ready))
+            # else:
+            #     if datetime.datetime.now() - self.RTO > self.previous_sent:
+            #         self.resend_packet()
+
         self.sock.sendto(json.dumps({"eof": True, "data": "", "sequence": self.sequence, "ack": False}), self.dest)
         sys.exit(0)
 
