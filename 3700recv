@@ -49,7 +49,6 @@ class Receiver:
         for ack_num in sorted(self.received_packets.keys()):
             if ack_num > self.sequence:
                 break
-            log('[WRITING] ' + str(ack_num))
             sys.stdout.write(self.received_packets[ack_num])
             del self.received_packets[ack_num]
 
@@ -59,14 +58,22 @@ class Receiver:
         while True:
             if self.sock.sendto(msg, addr) < len(msg):
                 log("[error] unable to fully send packet")
+            else:
+                log("[FIN DOOD]")
             if select.select([self.sock], [], [], 3)[0]: # guess 3 sec timeout
                 (data, addr) = self.sock.recvfrom(self.msg_size)
                 try:
                     decoded = json.loads(data)
                     if decoded['type'] == ACK:
                         break
+                    # if decoded['type'] == FIN:
+                    #     msg = json.dumps({'type': ACK, 'ack': self.sequence, 'sack': self.sequence})
+                    #     if self.sock.sendto(msg, addr) < len(msg):
+                    #         log("[error] unable to fully send packet")
                 except (ValueError, KeyError, TypeError):
                     log("[recv corrupt packet]")
+            else:
+                break
         log("[completed]")
 
     def receive_messages(self):
@@ -82,6 +89,7 @@ class Receiver:
                     if (decoded['type'] == FIN):
                         fin = seq
                         data_len = 1
+                        log("[recv Fin] " + str(seq) + " (" + str(data_len) + ") ACCEPTED")
                     if seq == self.sequence:
                         # self.sequence = seq + data_len
                         self.inc_seq(seq, data_len)
@@ -100,7 +108,7 @@ class Receiver:
                 except (ValueError, KeyError, TypeError):
                     log("[recv corrupt packet]")
             else:
-                log('[............] {seq}...{fin}...{packets}...{keep}'.format(seq=self.sequence, keep=keep_open, fin=fin, packets=self.received_packets.keys()))
+                pass#log('[............] {seq}...{fin}...{packets}...{keep}'.format(seq=self.sequence, keep=keep_open, fin=fin, packets=self.received_packets.keys()))
             self.write_data()
             keep_open = self.sequence != fin + 1
         self.close_connection(addr)

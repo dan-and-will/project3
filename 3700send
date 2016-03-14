@@ -35,21 +35,35 @@ class send:
         self.RTO = 2 * self.RTT
 
         self.in_flight = {}
-        self.advwnd = 3000
-        self.cwnd = 3000
+        self.queued_up = {}
+        # self.advwnd = 6000
+        self.cwnd = 10000
         self.in_order_ack = 0
 
     def window(self):
-        return min(self.advwnd, self.cwnd)
+        # return min(self.advwnd, self.cwnd)
+        return self.cwnd
 
     def effective_window(self):
         # window size - ( bytes sent - first byte in window acked)
-        keys = self.in_flight.keys()
-        return self.window() - (self.sequence - self.in_order_ack)
+        # keys = self.in_flight.keys()
+        www = self.window() - (self.sequence - self.in_order_ack)
+        # log("[DIS WINDEW] is dis bigz " + str(www) + "..." + str(self.window()) + "..." + str(self.sequence) + "..." + str(self.in_order_ack))
+        return www
 
-    def estimateRTT(self):
-        self.RTT = ( 9 * self.RTT +  (datetime.datetime.now() - self.previous_sent) ) / 10
-        self.RTO = 2 * self.RTT
+    def shrink_window(self):
+        self.cwnd -= 1000
+        if self.cwnd < 1000:
+            self.cwnd = 1000
+        log('SHRUNK TO ' + str(self.cwnd))
+
+    def grow_window(self):
+        self.cwnd += 1000
+        log('GREW TO ' + str(self.cwnd))
+
+    # def estimateRTT(self):
+    #     self.RTT = ( 9 * self.RTT +  (datetime.datetime.now() - self.previous_sent) ) / 10
+    #     self.RTO = 2 * self.RTT
 
     def send_packet(self, packet, seq_num):
         if self.sock.sendto(packet, self.dest) < len(packet):
@@ -66,10 +80,10 @@ class send:
             self.send_packet(msg, self.sequence)
             return True
         else:
-            msg = json.dumps({"type": FIN, "data": "", "sequence": self.sequence})
-            self.in_flight[self.sequence + 1] = (datetime.datetime.now(), msg)
-            self.send_packet(msg, self.sequence + 1)
-            log('[send FIN]')
+            # msg = json.dumps({"type": FIN, "data": "", "sequence": self.sequence})
+            # self.in_flight[self.sequence + 1] = (datetime.datetime.now(), msg)
+            # self.send_packet(msg, self.sequence + 1)
+            # log('[send FIN]')
             self.advwnd = 0
             return False
 
@@ -77,6 +91,32 @@ class send:
         msg = self.in_flight[ack_num][1]
         self.send_packet(msg, ack_num)
         self.in_flight[ack_num] = (datetime.datetime.now(), msg)
+        self.shrink_window()
+
+    def handle_timeouts(self):
+        now = datetime.datetime.now()
+        for ack_num in self.in_flight:
+            if now - self.in_flight[ack_num][0] > self.RTO:
+                self.handle_timeout(ack_num)
+
+    def fill_window(self, keep_open):
+        # log('FILLER ' + str(len(self.in_flight)))
+        now = datetime.datetime.now()
+        #resend timedout packets
+        for ack_num in sorted(self.in_flight):
+            if now - self.in_flight[ack_num][0] > self.RTO:
+                # if self.effective_window() > 0:
+                log("[TIMEOUT] " + str(ack_num))
+                self.handle_timeout(ack_num)
+        # send some new stuff
+        while keep_open and self.effective_window() > 0:
+            keep_open = self.send_next_packet()
+        return keep_open
+
+    def purge_lower_acks(self):
+        for seq in self.in_flight.keys():
+            if seq < self.in_order_ack:
+                del self.in_flight[seq]
 
     def open_connection(self):
         pass
@@ -85,12 +125,11 @@ class send:
         keep_open = True
         self.send_next_packet()
         while keep_open or len(self.in_flight):
-            now = datetime.datetime.now()
-            for ack_num in self.in_flight:
-                if now - self.in_flight[ack_num][0] > self.RTO:
-                    self.handle_timeout(ack_num)
-            if self.effective_window() > 0:
-                keep_open = self.send_next_packet()
+            keep_open = self.fill_window(keep_open)
+            # if self.effective_window() > 0:
+            #     keep_open = self.send_next_packet()
+            # keep_open = self.fill_window()
+            # self.handle_timeouts()
             if select.select([self.sock], [], [], 0.25)[0]:
                 (data, addr) = self.sock.recvfrom(self.msg_size)
                 try:
@@ -98,25 +137,42 @@ class send:
                     msg_type =  decoded['type']
                     if msg_type == ACK:
                         self.in_order_ack = decoded['ack']
+                        self.purge_lower_acks()
                         sack = decoded['sack']
                         log("[recv ack] " + str(sack))
                         if sack in self.in_flight:
+                            self.grow_window()
                             del self.in_flight[sack]
+                    if msg_type == FIN:
+                        keep_open = False
                 except ValueError, KeyError:
                     log("[recv corrupt packet]")
 
     def close_connection(self):
+        msg = json.dumps({"type": FIN, "data": "", "sequence": self.sequence})
+        self.send_packet(msg, self.sequence + 1)
+        log('[send FIN]')
+        send_time = datetime.datetime.now()
+        should_send_fin = True
         while True:
-            if select.select([self.sock], [], [], 0.25)[0]:
+            if should_send_fin and datetime.datetime.now() - send_time > self.RTO:
+                self.send_packet(msg, self.sequence + 1)
+                send_time = datetime.datetime.now()
+                log('[send FIN]')
+            if select.select([self.sock], [], [], 3)[0]: # guess big timeout
                 (data, addr) = self.sock.recvfrom(self.msg_size)
                 try:
                     decoded = json.loads(data)
-                    if (decoded['type'] == FIN):
+                    if decoded['type'] == FIN:
                         msg = json.dumps({'type': ACK, 'sequence': decoded['sequence'] + 1})
                         self.send_packet(msg, decoded['sequence'] + 1)
                         break
+                    if decoded['type'] == ACK:
+                        should_send_fin = False
                 except ValueError, KeyError:
                     log("[recv corrupt packet]")
+            else:
+                break
 
     def run(self):
         self.open_connection()
