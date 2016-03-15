@@ -28,14 +28,13 @@ class Receiver:
         self.sock.bind(("127.0.0.1", 0))
         self.sock.settimeout(30)
         log("[bound] " + str(self.sock.getsockname()[1]))
-
         self.sequence = 0
-
-        self.advertised_window = 3000 # in bytes
         self.received_packets = {}
         self.ooo_acks = {} # out of order acks
 
     def inc_seq(self, data_seq, data_len):
+        """increment sequnece and keep as unsigned 32 bits
+        """
         next_seq = data_seq + data_len
         for seq in sorted(self.ooo_acks.keys()):
             if seq == next_seq:
@@ -46,6 +45,8 @@ class Receiver:
         self.sequence = next_seq % 2**32
 
     def make_header(self, is_data, ack, sack):
+        """create packet header
+        """
         header = '0' if is_data else '1'
         for i in xrange(4):
             header += chr(ack % 256)
@@ -56,6 +57,8 @@ class Receiver:
         return header
 
     def parse_header(self, header):
+        """parse header from sender
+        """
         is_data = header[0] == '0'
         seq = 0
         for i in xrange(4, 0, -1):
@@ -64,13 +67,17 @@ class Receiver:
         return is_data, seq
 
     def write_data(self):
+        """write data to stdout in order
+        """
         for ack_num in sorted(self.received_packets.keys()):
             if ack_num > self.sequence:
                 break
             sys.stdout.write(self.received_packets[ack_num])
             del self.received_packets[ack_num]
 
-    def receive_messages(self):
+    def run(self):
+        """read data from the sender until no more is sent
+        """
         fin = -100
         while True:
             if select.select([self.sock], [], [], 4)[0]:
@@ -99,11 +106,8 @@ class Receiver:
                 self.write_data()
             elif self.sequence == fin + 1:
                 break
-        log('RECIEVED WAITING...' + str(len(self.received_packets)))
-
-    def run(self):
-        self.receive_messages()
 
 if __name__ == '__main__':
-    receiver = Receiver()
-    receiver.run()
+    """run receiver after script is called from command line
+    """
+    Receiver().run()
