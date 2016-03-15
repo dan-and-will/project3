@@ -43,7 +43,25 @@ class Receiver:
                 del self.ooo_acks[seq]
             else:
                 break
-        self.sequence = next_seq
+        self.sequence = next_seq % 2**32
+
+    def make_header(self, is_data, ack, sack):
+        header = '0' if is_data else '1'
+        for i in xrange(4):
+            header += chr(ack % 256)
+            ack /= 256
+        for i in xrange(4):
+            header += chr(sack % 256)
+            sack /= 256
+        return header
+
+    def parse_header(self, header):
+        is_data = header[0] == '0'
+        seq = 0
+        for i in xrange(4, 0, -1):
+            seq *= 256
+            seq += ord(header[i])
+        return is_data, seq
 
     def write_data(self):
         for ack_num in sorted(self.received_packets.keys()):
@@ -52,66 +70,36 @@ class Receiver:
             sys.stdout.write(self.received_packets[ack_num])
             del self.received_packets[ack_num]
 
-    def close_connection(self, addr):
-        msg = json.dumps({'type': FIN, "sequence": self.sequence})
-        # timeout = datetime.datetime.timedelta(seconds)
-        while True:
-            if self.sock.sendto(msg, addr) < len(msg):
-                log("[error] unable to fully send packet")
-            else:
-                log("[FIN DOOD]")
-            if select.select([self.sock], [], [], 3)[0]: # guess 3 sec timeout
-                (data, addr) = self.sock.recvfrom(self.msg_size)
-                try:
-                    decoded = json.loads(data)
-                    if decoded['type'] == ACK:
-                        break
-                    # if decoded['type'] == FIN:
-                    #     msg = json.dumps({'type': ACK, 'ack': self.sequence, 'sack': self.sequence})
-                    #     if self.sock.sendto(msg, addr) < len(msg):
-                    #         log("[error] unable to fully send packet")
-                except (ValueError, KeyError, TypeError):
-                    log("[recv corrupt packet]")
-            else:
-                break
-        log("[completed]")
-
     def receive_messages(self):
-        keep_open = True
         fin = -100
-        while keep_open or len(self.received_packets):
-            if select.select([self.sock], [], [], 0.25)[0]:
+        while True:
+            if select.select([self.sock], [], [], 4)[0]:
                 (data, addr) = self.sock.recvfrom(self.msg_size)
-                try:
-                    decoded = json.loads(data)
-                    seq = decoded['sequence']
-                    data_len = len(decoded['data'])
-                    if (decoded['type'] == FIN):
-                        fin = seq
-                        data_len = 1
-                        log("[recv Fin] " + str(seq) + " (" + str(data_len) + ") ACCEPTED")
-                    if seq == self.sequence:
-                        # self.sequence = seq + data_len
-                        self.inc_seq(seq, data_len)
-                        log("[recv data] " + str(seq) + " (" + str(data_len) + ") ACCEPTED (in-order)")
-                        self.received_packets[seq] = decoded['data']
-                    elif seq > self.sequence:
-                        log("[recv data] " + str(seq) + " (" + str(data_len) + ") ACCEPTED (out-of-order)")
-                        self.received_packets[seq] = decoded['data']
-                        self.ooo_acks[seq] = data_len
-                    else:
-                        log("[recv data] " + str(seq) + " (" + str(data_len) + ") IGNORED")
-                    msg = json.dumps({'type': ACK, "ack": self.sequence, "sack": seq + data_len})
-                    log("ABOUT TO SEND " + msg)
-                    if self.sock.sendto(msg, addr) < len(msg):
-                        log("[error] unable to fully send packet")
-                except (ValueError, KeyError, TypeError):
-                    log("[recv corrupt packet]")
-            else:
-                pass#log('[............] {seq}...{fin}...{packets}...{keep}'.format(seq=self.sequence, keep=keep_open, fin=fin, packets=self.received_packets.keys()))
-            self.write_data()
-            keep_open = self.sequence != fin + 1
-        self.close_connection(addr)
+                is_data, seq = self.parse_header(data[:5])
+                data = data[5:]
+                data_len = len(data)
+                if not is_data:
+                    fin = seq
+                    data_len = 1
+                    log("[recv Fin] " + str(seq) + " (" + str(data_len) + ") ACCEPTED")
+                if seq == self.sequence:
+                    self.inc_seq(seq, data_len)
+                    log("[recv data] " + str(seq) + " (" + str(data_len) + ") ACCEPTED (in-order)")
+                    self.received_packets[seq] = data
+                elif seq > self.sequence:
+                    log("[recv data] " + str(seq) + " (" + str(data_len) + ") ACCEPTED (out-of-order)")
+                    self.received_packets[seq] = data
+                    self.ooo_acks[seq] = data_len
+                else:
+                    log("[recv data] " + str(seq) + " (" + str(data_len) + ") IGNORED")
+                msg = self.make_header(True, self.sequence,  seq + data_len)
+                log("ABOUT TO SEND " + msg)
+                if self.sock.sendto(msg, addr) < len(msg):
+                    log("[error] unable to fully send packet")
+                self.write_data()
+            elif self.sequence == fin + 1:
+                break
+        log('RECIEVED WAITING...' + str(len(self.received_packets)))
 
     def run(self):
         self.receive_messages()
