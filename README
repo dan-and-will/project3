@@ -1,0 +1,10 @@
+Dan Russotto
+Will De Rivera
+
+We started off with the basics, implementing a stop and wait where each packets was sent one at at time. Then, we started
+implement sequential acknowledgments with a sliding window and selective acknowledgments. We then moved on to 
+growing and shrinking our window based on our retransmission time outs. We also worked on doing a successful 
+shutdown of the sender and receiver. This gave us trouble for a while, and would frequently wind up with a sender
+or receiver continually sending packets or acknowledgments because the other closed too early. FInally, we started
+to optimize how we stored our header information. Initally, we had a separate field in our dictionary for JSON, but
+at this point we moved over to encoding these headers into a string to reach the maximum segment size.
