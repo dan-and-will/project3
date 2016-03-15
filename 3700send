@@ -6,14 +6,8 @@
 
 import sys
 import socket
-import time
 import datetime
 import select
-import json
-
-SYN = 'SYN'
-ACK = 'ACK'
-FIN = 'FIN'
 
 def log(string):
     sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
@@ -25,21 +19,22 @@ class send:
         self.data_size = 1467
         self.msg_size = 1500
         self.sequence = 0
+        self.in_order_ack = self.sequence
         # Set up the socket
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(30)
         self.previous_packet = None
-
+        # initialize timeout
         self.RTT = datetime.timedelta(milliseconds=250)
         self.RTO = 2 * self.RTT
-
         self.in_flight = {}
         self.queued_up = {}
-        # self.advwnd = 6000
+        # initialize congestion window
         self.window = 5 * self.data_size
-        self.in_order_ack = 0
 
     def effective_window(self):
+        """return how much space is left in the window
+        """
         return self.window - (self.sequence - self.in_order_ack)
 
     def increment_sequence(self, inc):
@@ -49,20 +44,28 @@ class send:
         return seq % 2**32
 
     def shrink_window(self):
+        """shrink window for bad network
+        """
         self.window -= self.data_size
         if self.window < self.data_size:
             self.window = self.data_size
         log('SHRUNK TO ' + str(self.window))
 
     def grow_window(self):
+        """grow window for good network
+        """
         self.window += self.data_size
         log('GREW TO ' + str(self.window))
 
     def estimateRTT(self, packet_sent_time):
+        """adjust RTT and RTO to network
+        """
         self.RTT = ( 9 * self.RTT +  (datetime.datetime.now() - packet_sent_time) ) / 10
         self.RTO = 2 * self.RTT
 
     def make_header(self, is_data, seq):
+        """create packet header
+        """
         header = '0' if is_data else '1'
         for i in xrange(4):
             header += chr(seq % 256)
@@ -70,6 +73,8 @@ class send:
         return header
 
     def parse_header(self, header):
+        """parse header from reciever
+        """
         is_data = header[0] == '0'
         ack = 0
         sack = 0
@@ -82,12 +87,16 @@ class send:
         return is_data, ack, sack
 
     def send_packet(self, packet, seq_num):
+        """send packet on socket
+        """
         if self.sock.sendto(packet, self.dest) < len(packet):
             log("[error] unable to fully send packet")
         else:
             log("[send data] " + str(seq_num) + " (" + str(len(packet)) + ")")
 
     def send_next_packet(self):
+        """read from stdin and create packets to be sent
+        """
         data = sys.stdin.read(self.data_size)
         if (len(data) > 0):
             msg = self.make_header(True, self.sequence) + data
@@ -104,12 +113,16 @@ class send:
             return False
 
     def handle_timeout(self, ack_num):
+        """handle resending messages that have timed out
+        """
         msg = self.in_flight[ack_num][1]
         self.send_packet(msg, ack_num)
         self.in_flight[ack_num] = (datetime.datetime.now(), msg, True)
         self.shrink_window()
 
     def fill_window(self, keep_open):
+        """send data until the window is full
+        """
         now = datetime.datetime.now()
         #resend timedout packets
         for ack_num in sorted(self.in_flight):
@@ -122,11 +135,15 @@ class send:
         return keep_open
 
     def purge_lower_acks(self):
+        """remove ve messages that have been cumitively acked
+        """
         for seq in self.in_flight.keys():
             if seq < self.in_order_ack:
                 del self.in_flight[seq]
 
-    def send_data(self):
+    def run(self):
+        """send data to receiver until all have been acked
+        """
         keep_open = True
         while keep_open or len(self.in_flight):
             keep_open = self.fill_window(keep_open)
@@ -144,10 +161,9 @@ class send:
                         self.grow_window()
                         del self.in_flight[sack]
 
-    def run(self):
-        self.send_data()
-
 if __name__ == '__main__':
+    """run sender after script is called from command line
+    """
     # Bind to localhost and an ephemeral port
     IP_PORT = sys.argv[1]
     UDP_IP = IP_PORT[0:IP_PORT.find(":")]
